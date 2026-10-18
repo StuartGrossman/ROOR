@@ -38,6 +38,17 @@ class ExitTimingReview(unittest.TestCase):
                      edited=True,edited_at=NOW+timedelta(seconds=99))
         self.assertEqual(self.sells(),[])
 
+    def test_side_specific_exit_is_not_blocked_by_late_opposite_side_entry(self):
+        self.entry(1,600)
+        self.observe(2,'lets buy 601 spy puts for 40 cents',50,
+                     posted=NOW+timedelta(seconds=2),edited=True,
+                     edited_at=NOW+timedelta(seconds=49))
+        self.observe(3,'cut the calls at 7 cents',60,
+                     posted=NOW+timedelta(seconds=40),edited=True,
+                     edited_at=NOW+timedelta(seconds=59))
+        self.assertEqual(len(self.sells()),1)
+        self.assertEqual(self.sells()[0]['symbol'],'SPY261013C00600000')
+
     def test_spy_exit_uses_option_session_instead_of_stock_clock(self):
         self.entry()
         self.broker.is_open = lambda: False

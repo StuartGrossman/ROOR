@@ -5,7 +5,7 @@ Interpretations describe source intent; ownership, freshness and fills are separ
 import re
 from signals import parse_signal, directed_add_legs
 
-PARSER_VERSION = '2.1.0'
+PARSER_VERSION = '2.1.1'
 
 def normalize(text):
     return ' '.join(text.lower().replace('’', "'").split())

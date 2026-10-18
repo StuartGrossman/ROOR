@@ -117,6 +117,8 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
             # Current reductions may use a known edit; never apply an old
             # generic instruction to an intervening entry.
             intervening=any(v is not event and stamp<datetime.fromisoformat(v.get('source_available_at',v['sent_at']))<=now
+                            and not (v.get('entry_like') and signal.get('right') and v['signal'].get('right')
+                                     and signal['right']!=v['signal']['right'])
                             and (v.get('entry_like') or v.get('source_focus') or v['signal']['kind']=='add_batch'
                                  or (v['signal']['kind']=='exit' and v['signal'].get('strike')))
                             for v in self.state['events'].values())
