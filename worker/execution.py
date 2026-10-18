@@ -108,7 +108,7 @@ class Engine:
                 continue
             event = self.state['events'][order['event_id']]
             lifetime = order.get('lifetime_seconds', 60)
-            if event.get('edited') or (now - datetime.fromisoformat(order['created_at'])).total_seconds() >= lifetime:
+            if (event.get('edited') and not event.get('actionable_edited_entry')) or (now - datetime.fromisoformat(order['created_at'])).total_seconds() >= lifetime:
                 self.broker.cancel(order['id'])
         self.reconcile()
         if any(o['status'] in {'submitting', 'unknown'} for o in self.state['orders'].values()):

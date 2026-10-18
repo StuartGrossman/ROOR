@@ -46,3 +46,14 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/v1/messages/1').status_code,401)
         self.assertEqual(self.client.get('/api/v1/messages/1',headers=self.auth).json()['items'][0]['text'],'sold')
         self.assertEqual(self.client.get('/api/v1/messages/900',headers=self.auth).status_code,404)
+
+    def test_worker_interpretations_are_exposed_with_version(self):
+        from interpretation import interpret_signal, PARSER_VERSION
+        cases=['always set profit stops to be safe','start selling','added 50 more at 35 cents','sell half','sell or hold','holding both','now.']
+        stamp='2026-10-13T16:00:00+00:00'
+        for mid,text in enumerate(cases,100):
+            self.db.record(chat_id=123,message_id=mid,sent_at=stamp,edited_at=None,text=text,reply_to=None,media_type=None,historical=False)
+        page=self.client.get('/api/v1/signals?date=2026-10-13',headers=self.auth).json()
+        self.assertEqual(page['parserVersion'],PARSER_VERSION)
+        by_id={x['messageId']:x['signal'] for x in page['items']}
+        for mid,text in enumerate(cases,100):self.assertEqual(by_id[mid],interpret_signal(text,stamp))

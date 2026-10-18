@@ -21,11 +21,12 @@ class Archive:
                 PRIMARY KEY (chat_id, message_id, revision)
             )
         """)
+        self.db.execute("CREATE TABLE IF NOT EXISTS update_inbox (message_row INTEGER PRIMARY KEY, processed INTEGER NOT NULL DEFAULT 0)")
         self.db.commit()
 
     def record(self, *, chat_id: int, message_id: int, sent_at: str,
                edited_at: str | None, text: str, reply_to: int | None,
-               media_type: str | None, historical: bool) -> bool:
+               media_type: str | None, historical: bool, enqueue: bool = False) -> bool:
         payload = json.dumps([sent_at, edited_at, text, reply_to, media_type],
                              ensure_ascii=False).encode()
         revision = hashlib.sha256(payload).hexdigest()
@@ -35,7 +36,16 @@ class Archive:
                 (chat_id, message_id, revision, sent_at, edited_at, text, reply_to,
                  media_type, int(historical), datetime.now(timezone.utc).isoformat()),
             )
-        return cursor.rowcount == 1
+            inserted=cursor.rowcount == 1
+            if enqueue and not historical:
+                self.db.execute("INSERT OR IGNORE INTO update_inbox (message_row) SELECT rowid FROM messages WHERE chat_id=? AND message_id=? AND revision=? AND historical=0", (chat_id,message_id,revision))
+        return inserted
+
+    def pending_updates(self,chat_id,limit=100):
+        return [dict(r) for r in self.db.execute("SELECT m.rowid AS cursor,m.* FROM update_inbox i JOIN messages m ON m.rowid=i.message_row WHERE i.processed=0 AND m.chat_id=? ORDER BY m.rowid LIMIT ?",(chat_id,limit))]
+
+    def ack_update(self,cursor):
+        with self.db:self.db.execute("UPDATE update_inbox SET processed=1 WHERE message_row=?",(cursor,))
 
     def count(self, chat_id: int) -> int:
         return self.db.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ?",

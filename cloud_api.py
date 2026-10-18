@@ -6,8 +6,7 @@ import os, json, sqlite3, re
 from fastapi import HTTPException, Query
 from archive import Archive
 from live_api import create_app, ReadArchive, utc, utcnow, MAX_CURSOR
-from signals import parse_signal, directed_add_legs
-from exit_guidance import classify
+from interpretation import interpret_signal, PARSER_VERSION
 
 CHAT_ID=-1004384036660
 
@@ -27,18 +26,12 @@ def create_cloud_app(db_path, password_record, chat_id=CHAT_ID):
             rows=db.execute(sql,args)
             result=[]
             for r in rows:
-                signal=parse_signal(r['text'],r['sent_at'])
-                legs=directed_add_legs(r['text'])
-                guidance=classify(r['text'])
-                if legs: signal={'kind':'add' if len(legs)==1 else 'add_batch','legs':legs,'needs_position_context':True}
-                elif guidance: signal={'kind':'guidance','guidance_class':guidance,'needs_position_context':True}
-                elif re.search(r'\btrim(?:ming|med)?\b',r['text'],re.IGNORECASE):
-                    signal={'kind':'review','guidance_class':'possible_trim','reason':'Review quantity, intent, and position before acting.'}
+                signal=interpret_signal(r['text'],r['sent_at'])
                 if signals_only and signal['kind']=='ignore': continue
                 result.append(dict(cursor=r['cursor'], messageId=r['message_id'],revision=r['revision'],sentAt=utc(r['sent_at']),editedAt=utc(r['edited_at']),capturedAt=utc(r['captured_at']),text=r['text'],replyToMessageId=r['reply_to'],mediaType=r['media_type'],isHistorical=bool(r['historical']),isEdited=bool(r['edited_at']),signal=signal))
                 if len(result)>limit: break
         more=len(result)>limit; result=result[:limit]
-        return dict(items=result,nextCursor=result[-1]['cursor'] if result else after,hasMore=more,generatedAt=utcnow())
+        return dict(parserVersion=PARSER_VERSION,items=result,nextCursor=result[-1]['cursor'] if result else after,hasMore=more,generatedAt=utcnow())
     @app.get('/api/v1/callouts')
     def callouts(date: date | None = None, after: int=Query(0,ge=0,le=MAX_CURSOR),limit: int=Query(100,ge=1,le=500)):
         return items(date,after=after,limit=limit)
@@ -51,7 +44,7 @@ def create_cloud_app(db_path, password_record, chat_id=CHAT_ID):
         try:
             if path.stat().st_size>1000000: raise ValueError('Oversized status')
             value=json.loads(path.read_text())
-            return {k:value.get(k) for k in ('status','updated_at','environment','strategy_profile','cursor','orders_by_status','exit_watch','exit_reviews','telegram','error')}
+            return {k:value.get(k) for k in ('status','updated_at','environment','strategy_profile','cursor','orders_by_status','exit_watch','exit_reviews','telegram','error','parser_version')}
         except (OSError, ValueError, TypeError):
             return {'state':'not_configured'}
     @app.get('/api/v1/messages/{message_id}')

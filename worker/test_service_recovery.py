@@ -34,8 +34,10 @@ class RecoveryBroker(QuotedBroker):
 
 class DroppingTelegram:
     def __init__(self, *, initial_failure=False, failed_reconnects=0, hang=False,
-                 broker=None, messages=None):
+                 broker=None, messages=None, push_messages=None):
         self.connected = False
+        self.handlers=[]
+        self.push_messages=push_messages or []
         self.initial_failure = initial_failure
         self.failed_reconnects = failed_reconnects
         self.hang = hang
@@ -53,6 +55,14 @@ class DroppingTelegram:
     def message(mid, text, stamp):
         return SimpleNamespace(id=mid, raw_text=text, date=stamp, edit_date=None,
                                media=None, reply_to_msg_id=None)
+
+    def add_event_handler(self,handler,event):
+        self.handlers.append(handler)
+
+    async def catch_up(self):
+        for msg in self.push_messages:
+            await self.handlers[0](SimpleNamespace(message=msg))
+        self.push_messages=[]
 
     def is_connected(self):
         return self.connected
@@ -99,7 +109,7 @@ class DroppingTelegram:
 
 class ServiceRecoveryTests(unittest.TestCase):
     def run_worker(self, *, initial_failure=False, failed_reconnects=0, hang=False,
-                   open_position=False, broker=None, messages=None, now=NOW):
+                   open_position=False, broker=None, messages=None, now=NOW,push_messages=None):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             broker = broker or RecoveryBroker()
@@ -111,7 +121,7 @@ class ServiceRecoveryTests(unittest.TestCase):
             engine.save()
             client = DroppingTelegram(initial_failure=initial_failure,
                                       failed_reconnects=failed_reconnects,
-                                      hang=hang, broker=broker, messages=messages)
+                                      hang=hang, broker=broker, messages=messages,push_messages=push_messages)
             stop = folder/'stop'
             snapshots = []
             sleeps = []
@@ -218,3 +228,15 @@ class ServiceRecoveryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_push_original_and_intermediate_edit_are_archived_before_polled_final(self):
+        original=DroppingTelegram.message(41,'lets buy 600 spy calls for 39 cents.',NOW-timedelta(seconds=20))
+        middle=DroppingTelegram.message(41,'lets buy 600 spy calls for 41 cents.',original.date)
+        middle.edit_date=NOW-timedelta(seconds=10)
+        final=DroppingTelegram.message(41,'lets buy 600 spy calls for 43 cents.',original.date)
+        final.edit_date=NOW-timedelta(seconds=5)
+        state,broker,client,_,captured=self.run_worker(initial_failure=True,messages=[final],push_messages=[original,middle,final])
+        self.assertEqual(captured,[41,41,41])
+        self.assertEqual(state['events']['41']['raw_source_text'],final.raw_text)
+        self.assertEqual(len([o for o in broker.calls if o['side']=='buy']),1)
+        self.assertTrue(state['events']['41']['identity_stable_edit'])

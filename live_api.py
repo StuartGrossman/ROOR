@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from signals import parse_signal
+from interpretation import interpret_signal as parse_signal, PARSER_VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PRIVATE = ROOT/'work/private'
@@ -80,6 +80,7 @@ class Callout(BaseModel):
 
 
 class Page(BaseModel):
+    parserVersion: str = PARSER_VERSION
     items: list[Callout]
     nextCursor: int
     hasMore: bool

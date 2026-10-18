@@ -5,36 +5,41 @@ from decimal import Decimal
 from execution import NY, TERMINAL
 
 
-def classify(text):
-    text=' '.join(text.lower().replace('’',"'").split()).rstrip('.!')
-    if '?' in text:return None
-    if re.match(r'^(?:you can )?(?:sell when you see green|when you see green sell)\b',text):
-        return 'conditional_profit'
-    if re.search(r'\b(?:sell|cut|exit)\b',text) and re.search(r'\b(?:if|when|once|on any sign)\b',text):
-        return 'conditional_exit_undefined'
-    if re.search(r'\b(?:get ready to sell|prepare to sell|know the (?:fucking )?risk)\b',text):
-        return 'exit_warning'
-    if re.fullmatch(r'(?:sell|exit|cut)(?: it| them| all| everything)? now(?: guys)?',text):
-        return 'actionable_exit'
-    if text=='now':
-        return 'contextual_now'
-    return None
+from interpretation import classify_guidance as classify
 
 
 class ExitGuidanceMixin:
     def capture_guidance(self, event, text, now):
         category=classify(text)
         if category=='contextual_now':
-            previous=[]
-            for prior in self.state['events'].values():
-                if prior is event:break
-                previous.append(prior)
-            if not previous:return False
-            prior=previous[-1]
-            age=(datetime.fromisoformat(event['sent_at'])-datetime.fromisoformat(prior['sent_at'])).total_seconds()
-            if not 0<=age<=60 or prior.get('guidance_class')!='exit_warning':return False
-            event['resolved_targets']=prior.get('resolved_targets',[])
+            targets=self.source_context(event)
+            roots={str(x.get('source_entry')) for x in targets}
+            warning=None
+            for prior in reversed(list(self.state['events'].values())):
+                if prior is event or prior.get('strategy_generated'):continue
+                if datetime.fromisoformat(prior['sent_at']).astimezone(NY).date()!=now.astimezone(NY).date():continue
+                if prior.get('guidance_class')=='cancel_exit' or prior.get('entry_like'):break
+                if prior.get('guidance_class')!='exit_warning':continue
+                previous_roots={str(x.get('source_entry')) for x in prior.get('resolved_targets',[])}
+                if roots and 'None' not in roots and roots==previous_roots and not prior.get('cancelled_by'):
+                    warning=prior;break
+            if warning is None:
+                event.update(status='review',guidance_class='contextual_now',reason='Now has no active warning for the same source position.')
+                self.save();return True
+            event['resolved_targets']=warning.get('resolved_targets',[])
             category='actionable_exit'
+        if category=='cancel_exit':
+            roots={str(x.get('source_entry')) for x in self.source_context(event)}
+            for prior in self.state['events'].values():
+                if prior is event:continue
+                previous_roots={str(x.get('source_entry')) for x in prior.get('resolved_targets',[])}
+                if roots and roots==previous_roots and prior.get('guidance_class') in {'exit_warning','conditional_profit'}:
+                    prior.update(status='review',cancelled_by=event['sent_at'])
+            event.update(status='review',guidance_class=category,reason='Source cancelled pending exit guidance.')
+            self.save();return True
+        if category in {'profit_protection','tight_profit_protection'}:
+            event.update(status='review',guidance_class=category)
+            self.save();return True
         if category is None:return False
         event['guidance_class']=category
         # Carry named contract selectors even when the base parser called this commentary.

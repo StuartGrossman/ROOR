@@ -8,9 +8,7 @@ from managed_rules import decide
 from exit_guidance import ExitGuidanceMixin, classify
 from broker_lifecycle import BrokerLifecycleMixin
 
-def direct_sell_choice(text):
-    return bool(re.fullmatch(r'(?:you can )?(?:sell(?: now)? or hold|hold or sell(?: now)?)(?:,? (?:your choice|up to you))?[.!]?',text)
-                or re.fullmatch(r'you can sell for meh gains or risk it all for itm[.!]?',text))
+from interpretation import interpret_signal, direct_sell_choice, PARSER_VERSION
 
 class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
     def __init__(self,path,broker,rules):
@@ -59,81 +57,89 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
                 cash-=pending*(Decimal(reference)*100+Decimal('.10'))
         return min(cash,self.broker.buying_power())
 
+    @staticmethod
+    def source_identity(signal):
+        return tuple(signal.get(k) for k in ('ticker','strike','right','expiration'))
+
     def observe(self,mid,text,stamp,now,**kw):
         edit_stamp=kw.pop('edited_at',None)
-        reply_to=kw.pop('reply_to',None)
-        already_observed=str(mid) in self.state['events']
+        edited=bool(kw.get('edited'))
+        old=self.state['events'].get(str(mid))
+        previous=dict(old) if old else None
+        if previous and previous.get('edited_at'):
+            latest_edit=datetime.fromisoformat(previous['edited_at'])
+            if edit_stamp is None or edit_stamp<latest_edit:
+                return  # Delayed original/older revision cannot undo known newer intent.
+        signal=interpret_signal(text,stamp.isoformat())
         super().observe(mid,text,stamp,now,**kw)
-        if reply_to is not None:self.state['events'][str(mid)]['reply_to']=str(reply_to);self.save()
-        if kw.get('edited') and edit_stamp is not None:
-            event=self.state['events'][str(mid)]
-            if self.accept_fresh_edited_exit(event,text,stamp,edit_stamp,now):return
-        if already_observed:return
-        e=self.state['events'][str(mid)]
-        if reply_to is not None:e['reply_to']=str(reply_to);self.save()
-        if e['status'] not in ('ignore','review') or e.get('edited') or kw.get('edited') or not -5<=(now-stamp).total_seconds()<=60:return
+        event=self.state['events'][str(mid)]
+        event.update(raw_source_text=text,interpretation=signal,parser_version=PARSER_VERSION,
+                     source_available_at=now.isoformat())
+        if edit_stamp:event['edited_at']=edit_stamp.isoformat()
+        digest=hashlib.sha256(text.encode()).hexdigest()
+        if edited and edit_stamp is None:
+            self.save();return
+        if previous and previous['digest']==digest:
+            self.save();return
+        if previous and previous.get('entry_like') and previous['signal'].get('kind')=='entry':
+            same=signal.get('kind')=='entry' and self.source_identity(previous['signal'])==self.source_identity(signal)
+            event.update(digest=digest,signal=signal,source_identity_known=same,
+                         actionable_edited_entry=False,identity_stable_edit=same)
+            if same and previous.get('order_id'):
+                # Filled lots keep their immutable order lineage. Remaining buys
+                # are still cancelled on any change; an edit never adds size.
+                event.update(status=previous['status'] if previous['status']!='pending' else 'review',
+                             reason='Entry wording changed; owned contract identity preserved.')
+            else:event.update(status='review',reason='Entry changed; no new order.')
+            self.save();return
+        event.update(signal=signal,digest=digest)
+        source_fresh=-5<=(now-stamp).total_seconds()<=60
+        edit_fresh=edit_stamp is not None and 0<=(now-edit_stamp).total_seconds()<=60
+        if signal['kind']=='entry':
+            if edited:
+                allowed_prior=previous is None or (previous['signal'].get('kind') in {'review','ignore'} and not previous.get('order_id'))
+                in_window=source_fresh and edit_fresh and 0<=(edit_stamp-stamp).total_seconds()<=60
+                ordered=any(str(o.get('root_entry'))==str(mid) for o in self.state['orders'].values())
+                intervening=any(v is not event and stamp<datetime.fromisoformat(v.get('source_available_at',v['sent_at']))<=now
+                                and (v.get('entry_like') or v['signal']['kind'] in {'entry','exit','add','add_batch','guidance'})
+                                for v in self.state['events'].values())
+                if allowed_prior and in_window and not ordered and not intervening:
+                    event.update(status='pending',entry_like=True,actionable_edited_entry=True,
+                                 source_identity_known=True,reason='First actionable entry observed at its known edit time.')
+                else:event.update(status='review',reason='Edited entry unavailable, stale, already processed, or superseded.')
+            elif source_fresh and not previous:
+                event.update(status='pending',source_identity_known=True)
+            self.save();return
+        if event.get('entry_like') and signal['kind']=='review':
+            event.update(status='review',reason=signal.get('reason','Unsupported entry.'));self.save();return
+        if previous and not edited:return
+        if edited:
+            # Current reductions may use a known edit; never apply an old
+            # generic instruction to an intervening entry.
+            intervening=any(v is not event and v.get('entry_like') and stamp<datetime.fromisoformat(v['sent_at'])<=now for v in self.state['events'].values())
+            if not edit_fresh or not source_fresh or intervening or stamp.astimezone(NY).date()!=now.astimezone(NY).date():
+                event.update(status='review',reason='Edited follow-up is stale or has intervening entry context.');self.save();return
+            if signal['kind'] not in {'exit','guidance'}:
+                event.update(status='review',reason='Edited adds cannot enlarge a position.');self.save();return
+            event.update(reduce_only_edited_exit=True)
+            if signal['kind']=='exit':event['exit_started']=True
+        elif not source_fresh:
+            self.save();return
         normalized=' '.join(text.replace('’',"'").lower().split())
-        if self.observe_sell_choice(e,normalized):
-            return
-        if self.rules.get('callout_exits_only') and self.capture_guidance(e,normalized,now):return
-        legs=directed_add_legs(text)
-        if legs:
-            e.update(signal=legs[0] if len(legs)==1 else {'kind':'add_batch','legs':legs},status='pending')
-            self.save()
-            return
-        match=re.fullmatch(r'added (?P<qty>\d+) (?:more )?(?:at |for )?(?P<cents>\d+(?:\.\d+)?)(?: cents?)?[.!]?',normalized)
-        if match and int(match['qty'])>0 and Decimal(match['cents'])>0:
-            e.update(signal={'kind':'add','right':None},status='pending');self.save()
-        elif re.fullmatch(r"(?:stop loss triggered|sl triggered|outz|i'?m (?:outz|outs)(?: guys)?)[.!]?",normalized):
-            e.update(signal={'kind':'exit','right':None},status='pending');self.save()
-        elif re.fullmatch(
-            r"(?:(?:sl|stop loss) triggered(?:\.? (?:out )?at \d+(?:\.\d+)? cents?)?"
-            r"|got sl at \d+(?:\.\d+)? cents?|stopped out(?: 😫)?|profit stopped"
-            r"|sold the top|sold\d+(?:\.\d+)?|sell the move guys"
-            r"|what'?s with the eyes, i been sold)[.!]?", normalized):
-            # Confirmations act now, at an executable quote, never at a claimed
-            # historical sale time or premium. Ownership guards still apply.
-            e.update(signal={'kind':'exit','right':None},status='pending');self.save()
-        else:
-            exit_match=re.fullmatch(r'(?:sell|sold|cut|out)(?: the)? (?:(\d+(?:\.\d+)?) )?(calls?|puts?)(?: at \d+(?:\.\d+)? cents)?[.!]?',normalized)
-            add_match=re.fullmatch(r'(?:double|triple|tripe|quadruple|quadriple)(?: the| to the)? (?:(\d+(?:\.\d+)?) )?(calls?|puts?)[.!]?',normalized)
-            m=exit_match or add_match
-            if m:
-                e.update(signal={'kind':'exit' if exit_match else 'add','strike':m[1],'right':m[2].rstrip('s')},status='pending');self.save()
-            elif re.fullmatch(r'cut at \d+(?:\.\d+)? cents[.!]?',normalized):
-                e.update(signal={'kind':'exit','right':None},status='pending');self.save()
-
-        if self.rules.get('callout_exits_only') and e['status'] in {'ignore','review'} and re.search(r'\b(?:sell|sold|cut|exit|outz|outs)\b',normalized):
-            e.update(guidance_class='parser_miss',signal={'kind':'guidance','right':None},status='review',
-                     reason='Unrecognized exit wording: review source before executing.')
-            e['resolved_targets']=self.source_context(e)
-            e['matched_symbols']=self.resolve_followup(e,now.astimezone(NY).date().isoformat())
-            self.save()
-
-    def accept_fresh_edited_exit(self,event,text,stamp,edit_stamp,now):
-        # Current, explicitly executable text may reduce risk; missing originals
-        # never authorize new or larger positions, old edits or inferred prices.
-        if event.get('entry_like') or event.get('order_id'):return False
-        if not (0<=(now-stamp).total_seconds()<=60 and
-                0<=(edit_stamp-stamp).total_seconds()<=60 and
-                0<=(now-edit_stamp).total_seconds()<=60):return False
-        normalized=' '.join(text.lower().replace('’',"'").split())
-        if classify(normalized)=='conditional_profit':
-            event.update(reduce_only_edited_exit=True,edited_at=edit_stamp.isoformat(),digest=hashlib.sha256(text.encode()).hexdigest())
-            return self.capture_guidance(event,normalized,now)
-        signal={'kind':'exit','right':None} if direct_sell_choice(normalized) else parse_signal(text,stamp.isoformat())
-        if signal['kind']!='exit':
-            if re.fullmatch(r"(?:stopped out(?: 😫)?|stop loss triggered|sl triggered|outz|i'?m (?:outz|outs)(?: guys)?)[.!]?",normalized):
-                signal={'kind':'exit','right':None}
-            else:
-                match=re.fullmatch(r'(?:sell|sold|cut|out)(?: the)? (?:(\d+(?:\.\d+)?) )?(calls?|puts?)(?: at \d+(?:\.\d+)? cents)?[.!]?',normalized)
-                if not match:return False
-                signal={'kind':'exit','strike':match[1],'right':match[2].rstrip('s')}
-        event.setdefault('original_digest',event['digest'])
-        event.update(digest=hashlib.sha256(text.encode()).hexdigest(),signal=signal,status='pending',
-                     reduce_only_edited_exit=True,edited_at=edit_stamp.isoformat(),
-                     reason='Fresh edited exit accepted as reduce-only at current observation time.')
-        self.save();return True
+        if self.observe_sell_choice(event,normalized):return
+        if signal.get('guidance_class')=='position_focus':
+            self.capture_source_focus(event,text,stamp,edit_stamp,now,edited)
+            event.update(status='review');self.save();return
+        if self.rules.get('callout_exits_only') and self.capture_guidance(event,normalized,now):return
+        if signal['kind'] in {'exit','add','add_batch'}:
+            event.update(status='pending');self.save();return
+        if self.rules.get('callout_exits_only') and (signal.get('guidance_class')=='possible_trim' or re.search(r'\b(?:sell|sold|selling|cut|exit|outz|outs)\b',normalized)):
+            event.update(guidance_class=signal.get('guidance_class','parser_miss'),signal={**signal,'kind':'guidance','right':signal.get('right')},status='review',
+                         reason=signal.get('reason','Unrecognized exit wording: review source before executing.'))
+            event['resolved_targets']=self.source_context(event)
+            event['matched_symbols']=self.resolve_followup(event,now.astimezone(NY).date().isoformat())
+        if event['signal']['kind']=='guidance' and event['status']=='ignore':event.update(status='review',reason='Context-dependent guidance requires a matching instruction sequence.')
+        self.save()
 
     def observe_sell_choice(self,event,text):
         """Sell when an explicit choice is offered, never on preparation alone."""
@@ -182,6 +188,49 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
     def filled_buys(self,symbol):
         return [(cid,o) for cid,o in self.state['orders'].items() if o['payload']['symbol']==symbol and o['payload']['side']=='buy' and self.remaining(cid)>0]
 
+    def capture_source_focus(self,event,text,stamp,edit_stamp,now,edited):
+        """A named holding or explicit two-position comment changes focus only.
+
+        This cannot submit orders. Unknown/uncopied targets remain barriers.
+        """
+        if not 0<=(now-stamp).total_seconds()<=60:return
+        if edited and (edit_stamp is None or not 0<=(edit_stamp-stamp).total_seconds()<=60 or not 0<=(now-edit_stamp).total_seconds()<=60):return
+        text=' '.join(text.lower().replace('’',"'").split()).rstrip('.!')
+        named=re.fullmatch(r"(?:i'?m |im |still )?(?:holding|holdin|hodling|holdint)(?: the)? (\d+(?:\.\d+)?) (?:spy )?(calls?|puts?)",text)
+        both=re.fullmatch(r'both (calls|puts)(?: (?:are )?(?:green|itm))(?: afff)?',text)
+        pair=re.fullmatch(r"(?:i'?m |im |still )?holding (?:the )?(\d+(?:\.\d+)?) and (\d+(?:\.\d+)?) (calls?|puts?)",text)
+        holding_both=re.fullmatch(r"(?:i'?m |im |still )?holding both(?: (calls|puts|sides))?(?: still)?",text)
+        terminal=re.fullmatch(r"(?:i'?m |im )letting (?:the )?(\d+(?:\.\d+)?) (calls?|puts?) exp(?:ire)? worthless",text)
+        if terminal:
+            event.update(source_terminal_intent='hold_to_expiry',terminal_selector={'strike':terminal[1],'right':terminal[2].rstrip('s')});self.save();return
+        premium_holding=re.fullmatch(r'(?:the )?(\d+(?:\.\d+)?) is holding at \d+(?:\.\d+)? cents?',text)
+        if not named and not both and not pair and not holding_both and not premium_holding:return
+        entries=[]
+        for mid,prior in self.state['events'].items():
+            if prior is event:break
+            if datetime.fromisoformat(prior['sent_at']).astimezone(NY).date()!=stamp.astimezone(NY).date() or not prior.get('entry_like') or prior.get('duplicate_of'):continue
+            ps=prior['signal']
+            entries.append(dict(ps,source_entry=mid,source_edited=bool((prior.get('edited') and not prior.get('actionable_edited_entry') and not prior.get('source_identity_known')))))
+        if named:
+            matches=[x for x in entries if x.get('strike')==named[1] and x.get('right')==named[2].rstrip('s')]
+            if matches:event['source_focus']=[matches[-1]]
+        elif premium_holding:
+            matches=[x for x in entries if x.get('strike')==premium_holding[1]]
+            if matches and len({(x.get('ticker'),x.get('strike'),x.get('right')) for x in matches})==1:event['source_focus']=[matches[-1]]
+        elif pair:
+            selected=[]
+            for strike in pair.group(1,2):
+                matches=[x for x in entries if x.get('strike')==strike and x.get('right')==pair[3].rstrip('s')]
+                if matches:selected.append(matches[-1])
+            if len(selected)==2 and pair[1]!=pair[2]:event['source_focus']=selected
+        else:
+            side=both[1].rstrip('s') if both else holding_both[1].rstrip('s') if holding_both[1] in {'calls','puts'} else None
+            matches=[x for x in entries if side is None or x.get('right')==side]
+            if len(matches)>=2 and all(x.get('ticker') in {'SPY','SPX'} for x in matches[-2:]) and len({(x.get('ticker'),x.get('strike'),x.get('right')) for x in matches[-2:]})==2:event['source_focus']=matches[-2:]
+        if event.get('source_focus'):
+            if pair or holding_both:event['exit_focus_only']=True
+            self.save()
+
     def source_context(self,event):
         """Resolve source intent independently of which entries we could fill.
 
@@ -194,7 +243,7 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
         reply=event.get('reply_to')
         if reply:
             prior=self.state['events'].get(str(reply))
-            if not prior or prior.get('edited'):return []
+            if not prior or (prior.get('edited') and not prior.get('actionable_edited_entry') and not prior.get('source_identity_known')):return []
             ps=prior['signal']
             if prior.get('entry_like') and ps.get('strike') and ps.get('right'):
                 return [dict(ps,source_entry=str(reply))]
@@ -205,12 +254,20 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
             if prior.get('strategy_generated'):continue
             if datetime.fromisoformat(prior['sent_at']).astimezone(NY).date()!=day:continue
             if prior.get('duplicate_of'):continue
-            ps=prior['signal']
+            ps=prior.get('exit_scope_selector',prior['signal'])
             if prior.get('entry_like'):
                 # Even unsupported/edited entries are context barriers. They
                 # must not redirect an unqualified follow-up to an older trade.
-                contexts.append([dict(ps,source_edited=bool(prior.get('edited')),source_entry=prior_mid)])
-            elif ps['kind']=='add_batch' and not prior.get('edited'):
+                contexts.append([dict(ps,source_edited=bool((prior.get('edited') and not prior.get('actionable_edited_entry') and not prior.get('source_identity_known'))),source_entry=prior_mid)])
+            elif ps['kind']=='exit' and ps.get('strike') and ps.get('right'):
+                # An explicit singular selector replaces a previous group even
+                # if it has no owned match. Never fall back to the old group.
+                selectors=[x for group in contexts for x in group if x.get('strike')==ps['strike'] and x.get('right')==ps['right'] and (not ps.get('ticker') or ps['ticker']==x.get('ticker'))]
+                contexts.append([selectors[-1] if selectors else dict(ps)])
+            elif prior.get('source_focus'):
+                if signal['kind']=='add' and prior.get('exit_focus_only'):continue
+                contexts.append(prior['source_focus'])
+            elif ps['kind']=='add_batch' and not (prior.get('edited') and not prior.get('actionable_edited_entry') and not prior.get('source_identity_known')):
                 contexts.append(ps['legs'])
         for group in reversed(contexts):
             selected=[x for x in group if not signal.get('right') or not x.get('right') or x.get('right')==signal['right']]
@@ -315,6 +372,9 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
                                              'right':self.state['contracts'][symbol]['right']},
                                     status='pending',sent_at=event['sent_at'],source_event_id=str(mid))
                                for symbol in candidates]
+                for leg in event['legs']:
+                    for key in ('exit_fraction','exit_qty','action'):
+                        if key in signal:leg['signal'][key]=signal[key]
                 event['matched_symbols']=candidates;self.save()
                 return self.execute_batch(mid,event,now)
             if len(candidates)!=1:return self.finish(event,'review','No unique owned target in the current source context.')
@@ -329,8 +389,15 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
                 if self.pending(symbol):return
                 qty=self.owned(symbol)
                 if qty<=0 or self.broker.position(symbol)!=qty:return self.finish(event,'review','Owned quantity does not match broker.')
-                allocations=[(cid,self.remaining(cid)) for cid,_ in self.filled_buys(symbol)]
-                return self.submit_policy(mid,event,symbol,qty,None,now,allocations,'chat_exit')
+                if 'exit_fraction' in signal:qty=int(Decimal(qty)*Decimal(signal['exit_fraction']))
+                elif 'exit_qty' in signal:qty=min(qty,int(signal['exit_qty']))
+                if qty<=0:return self.finish(event,'review','Trim rounds to zero whole contracts.')
+                allocations=[];left=qty
+                for cid,_ in self.filled_buys(symbol):
+                    n=min(left,self.remaining(cid))
+                    if n:allocations.append((cid,n));left-=n
+                    if not left:break
+                return self.submit_policy(mid,event,symbol,qty,None,now,allocations,'chat_trim' if signal.get('action')=='trim' else 'chat_exit')
             buys=self.filled_buys(symbol)
             if self.pending(symbol) or not buys or self.broker.position(symbol)!=self.owned(symbol):return self.finish(event,'review','Position is pending or changed outside bridge.')
             root=buys[0][1]['root_entry'];event['root_entry']=root

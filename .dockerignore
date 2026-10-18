@@ -14,3 +14,5 @@
 !worker/settings.json
 !worker/matrix-profile.json
 worker/test_*.py
+
+!interpretation.py

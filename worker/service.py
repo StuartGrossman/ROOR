@@ -14,7 +14,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from telethon import TelegramClient, errors, utils
+from telethon import TelegramClient, errors, utils, events
+from interpretation import PARSER_VERSION
 from archive import Archive
 from broker import PaperBroker
 from connect import PRIVATE, ROOT, private_json
@@ -154,7 +155,7 @@ def publish(engine, status, error=None):
     recent = [{'message_id': mid, 'action': e['signal']['kind'], 'status': e['status'],
                'reason': e.get('reason', '')} for mid, e in events.items()
               if e['signal']['kind'] != 'ignore'][-8:]
-    summary = {'status': status, 'updated_at': utcnow().isoformat(), 'environment': 'paper',
+    summary = {'parser_version': PARSER_VERSION, 'status': status, 'updated_at': utcnow().isoformat(), 'environment': 'paper',
                'strategy_profile': 'entry200_add400_callout_exits' if hasattr(engine, 'rules') else 'legacy',
                'source': 'geerawr', 'cursor': engine.state.get('cursor'),
                'order_intents': len(orders), 'orders_by_status': dict(Counter(o['status'] for o in orders.values())),
@@ -260,8 +261,14 @@ async def worker():
         audit_positions(engine)
         config = private_json('telegram.json')
         client = TelegramClient(str(PRIVATE / ('feed-telegram' if os.environ.get('FLY_PAPER') == '1' else 'telegram')), config['api_id'], config['api_hash'],
-            receive_updates=False, flood_sleep_threshold=0, request_retries=1, connection_retries=2)
+            receive_updates=True, catch_up=True, sequential_updates=True, flood_sleep_threshold=0, request_retries=1, connection_retries=2)
         archive = Archive(PRIVATE / 'messages.sqlite3')
+        async def incoming(event):
+            # Durably enqueue all push revisions; brokerage mutations happen
+            # only in the single consumer loop, never in Telegram callbacks.
+            capture(archive,event.message,enqueue=True)
+        client.add_event_handler(incoming,events.NewMessage(chats=CHAT_ID))
+        client.add_event_handler(incoming,events.MessageEdited(chats=CHAT_ID))
         engine.telegram_health = dict(connected=False, last_successful_read_at=None,
                                       reconnect_attempts=0, consecutive_failures=0,
                                       last_error_stage=None)
@@ -300,7 +307,9 @@ async def worker():
                         entity = await telegram_request(engine, client.get_entity(CHAT_ID))
                         if utils.get_peer_id(entity) != CHAT_ID or not entity.broadcast:
                             raise RuntimeError('The configured source is not the confirmed broadcast channel.')
+                        await telegram_request(engine,client.catch_up())
                         health['connected'] = True
+                    drain_updates(archive,engine)
                     if 'cursor' not in engine.state:
                         stage = 'telegram/initial_cursor'
                         latest = await telegram_request(engine, client.get_messages(entity, limit=1))
@@ -317,24 +326,18 @@ async def worker():
                             break
                         if not msg.date:
                             continue
-                        capture(archive, msg)
-                        engine.observe(msg.id, msg.raw_text or '', msg.date, utcnow(),
-                                       edited=bool(msg.edit_date), media=bool(msg.media), reply_to=msg.reply_to_msg_id, edited_at=msg.edit_date)
+                        capture(archive, msg,enqueue=True)
                         engine.state['cursor'] = msg.id
                         engine.save()
-                        stage = 'broker/check'
-                        audit_positions(engine)
-                        engine.tick(utcnow())
+                    drain_updates(archive,engine)
                     if STOP.exists():
                         break
                     if time.monotonic() - last_edit_check > 30:
                         stage = 'telegram/edits'
-                        recent = await telegram_request(engine, read_messages(client, entity, limit=25))
+                        recent = await telegram_request(engine, read_messages(client, entity, limit=100))
                         for msg in recent:
-                            capture(archive, msg)
-                            if str(msg.id) in engine.state['events']:
-                                engine.observe(msg.id, msg.raw_text or '', msg.date, utcnow(),
-                                               edited=bool(msg.edit_date), media=bool(msg.media), reply_to=msg.reply_to_msg_id, edited_at=msg.edit_date)
+                            capture(archive,msg,enqueue=str(msg.id) in engine.state['events'])
+                        drain_updates(archive,engine)
                         last_edit_check = time.monotonic()
                     health.update(connected=True, consecutive_failures=0, last_error_stage=None)
                     stage = 'broker/check'
@@ -371,16 +374,29 @@ async def worker():
         finally:
             health['connected'] = False
             publish(engine, 'stopped')
-            archive.close()
-            await telegram_request(engine, client.disconnect())
+            try:
+                await telegram_request(engine, client.disconnect())
+            finally:
+                archive.close()
 
 
-def capture(archive, msg):
+def drain_updates(archive,engine):
+    for row in archive.pending_updates(CHAT_ID):
+        if STOP.exists():break
+        audit_positions(engine)
+        engine.observe(row['message_id'],row['text'],datetime.fromisoformat(row['sent_at']),utcnow(),
+                       edited=bool(row['edited_at']),edited_at=datetime.fromisoformat(row['edited_at']) if row['edited_at'] else None,
+                       media=bool(row['media_type']),reply_to=row['reply_to'])
+        engine.tick(utcnow())
+        archive.ack_update(row['cursor'])
+
+
+def capture(archive, msg, *, enqueue=False):
     if msg.date:
         archive.record(chat_id=CHAT_ID, message_id=msg.id, sent_at=msg.date.isoformat(),
             edited_at=msg.edit_date.isoformat() if msg.edit_date else None, text=msg.raw_text or '',
             reply_to=msg.reply_to_msg_id, media_type=type(msg.media).__name__ if msg.media else None,
-            historical=False)
+            historical=False,enqueue=enqueue)
 
 
 def main():

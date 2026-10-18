@@ -7,12 +7,7 @@ from decimal import Decimal as D
 from execution import NY
 
 
-def protection_kind(text):
-    text=' '.join(text.lower().replace('’',"'").split())
-    if '?' in text:return None
-    if re.search(r'\b(?:set|setting|have)(?: a)?(?: tight)? profit stops?\b',text):return 'profit_protection'
-    if re.fullmatch(r'have a tight stop[.!]*',text):return 'tight_profit_protection'
-    return None
+from interpretation import protection_kind
 
 
 def install(e,targets=False):
@@ -54,7 +49,7 @@ def install(e,targets=False):
         target=targets and (re.search(r'(?:🎯|\btarget)\s+is\s+vwap',norm) or re.fullmatch(r'target\s+\d+(?:\.\d+)?[.!]*',norm) or re.fullmatch(r'(?:🎯|target)\s+reached[.!]*',norm))
         if not kind and not target:return
         event=e.state['events'].get(str(mid))
-        if not event or event.get('profit_policy_observed'):return
+        if not event or event.get('raw_source_text')!=text or event.get('profit_policy_observed'):return
         event['profit_policy_observed']=True
         # An old edited generic instruction cannot attach to an intervening trade.
         if kw.get('edited') and any(v.get('entry_like') and stamp<datetime.fromisoformat(v['sent_at'])<=now for k,v in e.state['events'].items() if k!=str(mid)):

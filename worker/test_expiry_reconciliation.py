@@ -56,12 +56,15 @@ class ExpiryTests(unittest.TestCase):
         self.engine.tick(now)
         self.assertEqual(self.broker.calls[-1]['side'],'sell')
         self.assertTrue(self.engine.state['events']['2']['reduce_only_edited_exit'])
-    def test_stale_edited_sell_and_edited_entry_stay_in_review(self):
+    def test_stale_edited_sell_stays_in_review_but_fresh_entry_is_eligible(self):
         now=NOW+timedelta(seconds=100);self.broker.at=now
         self.engine.observe(2,'sold',NOW,now,edited=True,edited_at=now)
         self.engine.observe(3,'lets buy 601 spy calls for 39 cents.',now,now,edited=True,edited_at=now)
         self.engine.tick(now)
-        self.assertEqual(len(self.broker.calls),1)
+        self.assertEqual(self.engine.state['events']['2']['status'],'review')
+        self.assertTrue(self.engine.state['events']['3']['actionable_edited_entry'])
+        # This fixture maps both strikes to the same broker symbol; ownership still blocks it.
+        self.assertEqual([o['side'] for o in self.broker.calls],['buy'])
     def test_missing_event_on_audit_still_pauses(self):
         import service
         from unittest.mock import patch
