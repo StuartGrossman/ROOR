@@ -5,3 +5,5 @@
 !signals.py
 !live_api.py
 !cloud_api.py
+!live_reader.py
+!supervisor.py

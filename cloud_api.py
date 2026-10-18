@@ -11,7 +11,7 @@ from signals import parse_signal
 CHAT_ID=-1004384036660
 
 def create_cloud_app(db_path, password_record, chat_id=CHAT_ID):
-    app=create_app(db_path,password_record,chat_id)
+    app=create_app(db_path,password_record,chat_id, status_path=Path(db_path).parent/'feed-reader-status.json')
     source=ReadArchive(db_path,chat_id)
     def items(day=None, message_id=None, after=0, limit=100, signals_only=False):
         sql='SELECT rowid AS cursor, * FROM messages WHERE chat_id=? AND rowid>?'; args=[chat_id,after]
