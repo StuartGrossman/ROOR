@@ -5,7 +5,7 @@ Interpretations describe source intent; ownership, freshness and fills are separ
 import re
 from signals import parse_signal, directed_add_legs
 
-PARSER_VERSION = '2.0.1'
+PARSER_VERSION = '2.1.0'
 
 def normalize(text):
     return ' '.join(text.lower().replace('’', "'").split())
@@ -17,8 +17,8 @@ def direct_sell_choice(text):
 def protection_kind(text):
     text=normalize(text)
     if '?' in text or re.search(r"\b(?:do not|don't|dont|never) (?:set|have)\b",text):return None
-    if re.search(r'\b(?:set|setting|have)(?: a)?(?: tight)? profit stops?\b',text):return 'profit_protection'
-    if re.fullmatch(r'(?:must )?have a tight stop[.!]*',text):return 'tight_profit_protection'
+    if re.search(r'\b(?:set|setting|have)(?: a)?(?: tight)? (?:profit|prfit) stops?\b',text):return 'profit_protection'
+    if re.fullmatch(r"(?:(?:must )?have|i have(?: to have)?|i'?m heavy so i have|i'?m in \d+ contracts, so i have to have) a tight stop(?: guys| degens)?[.!]*",text):return 'tight_profit_protection'
     return None
 
 def holding_pair(text):
@@ -44,6 +44,10 @@ def interpret_signal(text,sent_at):
     if len(text)>4000:return signal
     n=normalize(text)
     if signal['kind'] in {'entry','exit','add'}:return signal
+    if re.fullmatch(r'both (?:calls|puts)(?: (?:are )?(?:green|itm))(?: afff)?[.!]*',n):
+        return {'kind':'guidance','guidance_class':'position_focus','right':None,'needs_position_context':True}
+    if re.fullmatch(r"(?:i'?m |im )letting (?:the )?\d+(?:\.\d+)? (?:calls?|puts?) exp(?:ire)? worthless[.!]*",n):
+        return {'kind':'guidance','guidance_class':'hold_to_expiry','right':None,'needs_position_context':True}
     if holding_pair(n):return {'kind':'guidance','guidance_class':'position_focus','right':None,'needs_position_context':True}
     guidance=classify_guidance(n)
     if guidance:

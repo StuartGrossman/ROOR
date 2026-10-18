@@ -1,9 +1,11 @@
 """Alpaca adapter with fixed paper trading and OPRA data destinations."""
 
 from decimal import Decimal
+from datetime import datetime, timedelta
+import re
 import requests
 
-from execution import RejectedOrder, UncertainSubmission
+from execution import RejectedOrder, UncertainSubmission, NY
 
 PAPER = 'https://paper-api.alpaca.markets'
 DATA = 'https://data.alpaca.markets'
@@ -53,6 +55,23 @@ class PaperBroker:
 
     def is_open(self):
         return self.request('GET', '/v2/clock')['is_open'] is True
+
+    def option_exit_open(self,symbol,now):
+        if self.is_open():return True
+        # SPY has a 15-minute option closing session beyond the stock close.
+        # Calendar evidence prevents holiday/weekend/early-close extensions.
+        if not re.fullmatch(r'SPY\d{6}[CP]\d{8}',symbol):return False
+        local=now.astimezone(NY);day=local.date().isoformat()
+        if not '13:00:00'<=local.strftime('%H:%M:%S')<'16:15:00':return False
+        cache=getattr(self,'_exit_calendar',{})
+        if day not in cache:
+            rows=self.request('GET','/v2/calendar',params={'start':day,'end':day})
+            cache={day:next((row for row in rows if row.get('date')==day),None)}
+            self._exit_calendar=cache
+        session=cache[day]
+        if not session:return False
+        close=datetime.fromisoformat(day+'T'+session['close']).replace(tzinfo=NY)
+        return close<=local<close+timedelta(minutes=15)
 
     def contract(self, signal):
         result = self.request('GET', '/v2/options/contracts', params={

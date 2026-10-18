@@ -70,8 +70,8 @@ class ExitGuidanceMixin:
             if event.get('status')!='watching' or event.get('guidance_class')!='conditional_profit':continue
             if event.get('edited') and not event.get('reduce_only_edited_exit'):
                 self.finish(event,'review','Conditional instruction edited; manual review required.');continue
-            if not self.broker.is_open():continue
             for symbol in event.get('matched_symbols',[]):
+                if not self.exit_market_open(symbol,now):continue
                 qty=self.owned(symbol)
                 if qty<=0:continue
                 if any(o['payload']['side']=='sell' or o['status'] in {'submitting','unknown'} for o in self.pending(symbol)):continue

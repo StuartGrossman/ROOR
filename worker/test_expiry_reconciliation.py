@@ -58,7 +58,7 @@ class ExpiryTests(unittest.TestCase):
         self.assertTrue(self.engine.state['events']['2']['reduce_only_edited_exit'])
     def test_stale_edited_sell_stays_in_review_but_fresh_entry_is_eligible(self):
         now=NOW+timedelta(seconds=100);self.broker.at=now
-        self.engine.observe(2,'sold',NOW,now,edited=True,edited_at=now)
+        self.engine.observe(2,'sold',NOW,now,edited=True,edited_at=NOW)
         self.engine.observe(3,'lets buy 601 spy calls for 39 cents.',now,now,edited=True,edited_at=now)
         self.engine.tick(now)
         self.assertEqual(self.engine.state['events']['2']['status'],'review')

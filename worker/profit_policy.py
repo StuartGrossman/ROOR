@@ -20,7 +20,7 @@ def install(e,targets=False):
         qty=e.owned(symbol)
         if qty<=0:
             event['profit_result']='pending_entry_canceled_or_no_position';return
-        if not e.broker.is_open() or e.broker.position(symbol)!=qty:return
+        if not e.exit_market_open(symbol,now) or e.broker.position(symbol)!=qty:return
         if any(o['payload']['side']=='sell' for o in e.pending(symbol)):return
         try:
             q=e.broker.full_quote(symbol);bid,ask=D(str(q['bid'])),D(str(q['ask']))
@@ -50,6 +50,7 @@ def install(e,targets=False):
         if not kind and not target:return
         event=e.state['events'].get(str(mid))
         if not event or event.get('raw_source_text')!=text or event.get('profit_policy_observed'):return
+        if kw.get('edited') and not event.get('reduce_only_edited_exit'):return
         event['profit_policy_observed']=True
         # An old edited generic instruction cannot attach to an intervening trade.
         if kw.get('edited') and any(v.get('entry_like') and stamp<datetime.fromisoformat(v['sent_at'])<=now for k,v in e.state['events'].items() if k!=str(mid)):

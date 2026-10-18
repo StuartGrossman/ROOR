@@ -116,8 +116,12 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
         if edited:
             # Current reductions may use a known edit; never apply an old
             # generic instruction to an intervening entry.
-            intervening=any(v is not event and v.get('entry_like') and stamp<datetime.fromisoformat(v['sent_at'])<=now for v in self.state['events'].values())
-            if not edit_fresh or not source_fresh or intervening or stamp.astimezone(NY).date()!=now.astimezone(NY).date():
+            intervening=any(v is not event and stamp<datetime.fromisoformat(v.get('source_available_at',v['sent_at']))<=now
+                            and (v.get('entry_like') or v.get('source_focus') or v['signal']['kind']=='add_batch'
+                                 or (v['signal']['kind']=='exit' and v['signal'].get('strike')))
+                            for v in self.state['events'].values())
+            current_reduction=signal['kind']=='exit' or signal.get('guidance_class') in {'profit_protection','tight_profit_protection','conditional_profit'}
+            if not edit_fresh or (not source_fresh and not current_reduction) or intervening or stamp.astimezone(NY).date()!=now.astimezone(NY).date():
                 event.update(status='review',reason='Edited follow-up is stale or has intervening entry context.');self.save();return
             if signal['kind'] not in {'exit','guidance'}:
                 event.update(status='review',reason='Edited adds cannot enlarge a position.');self.save();return
@@ -127,7 +131,7 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
             self.save();return
         normalized=' '.join(text.replace('’',"'").lower().split())
         if self.observe_sell_choice(event,normalized):return
-        if signal.get('guidance_class')=='position_focus':
+        if signal.get('guidance_class') in {'position_focus','hold_to_expiry'}:
             self.capture_source_focus(event,text,stamp,edit_stamp,now,edited)
             event.update(status='review');self.save();return
         if self.rules.get('callout_exits_only') and self.capture_guidance(event,normalized,now):return
@@ -226,9 +230,9 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
         else:
             side=both[1].rstrip('s') if both else holding_both[1].rstrip('s') if holding_both[1] in {'calls','puts'} else None
             matches=[x for x in entries if side is None or x.get('right')==side]
-            if len(matches)>=2 and all(x.get('ticker') in {'SPY','SPX'} for x in matches[-2:]) and len({(x.get('ticker'),x.get('strike'),x.get('right')) for x in matches[-2:]})==2:event['source_focus']=matches[-2:]
+            if len(matches)>=2 and len({x.get('ticker') for x in matches[-2:]})==1 and all(x.get('ticker') in {'SPY','SPX'} for x in matches[-2:]) and len({(x.get('ticker'),x.get('strike'),x.get('right')) for x in matches[-2:]})==2:event['source_focus']=matches[-2:]
         if event.get('source_focus'):
-            if pair or holding_both:event['exit_focus_only']=True
+            if pair or holding_both or both:event['exit_focus_only']=True
             self.save()
 
     def source_context(self,event):
@@ -325,11 +329,15 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
                     else 'skipped')
             self.finish(event,status,'Per-contract instructions processed individually.')
 
+    def exit_market_open(self,symbol,now):
+        check=getattr(self.broker,'option_exit_open',None)
+        return check(symbol,now) if check else self.broker.is_open()
+
     def execute(self,mid,event,now):
         if event['signal']['kind']=='add_batch' or (event['signal']['kind']=='exit' and 'legs' in event):
             return self.execute_batch(mid,event,now)
-        if not self.broker.is_open():return self.finish(event,'skipped','Market is closed.')
         signal=event['signal'];kind=signal['kind'];today=now.astimezone(NY).date().isoformat()
+        if kind!='exit' and not self.broker.is_open():return self.finish(event,'skipped','Market is closed.')
         if kind!='exit' and now.astimezone(NY).strftime('%H:%M:%S')>=self.rules['close_time']:
             return self.finish(event,'skipped','Strategy entry window is closed.')
         if kind=='entry':
@@ -381,6 +389,7 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
             symbol=candidates[0];contract=self.state['contracts'][symbol]
             event['matched_symbols']=[symbol]
             if kind=='exit':
+                if not self.exit_market_open(symbol,now):return self.finish(event,'skipped','Option trading session is closed.')
                 event['exit_started']=True;self.save()
                 for o in self.pending(symbol):
                     if o['payload']['side']=='sell':return

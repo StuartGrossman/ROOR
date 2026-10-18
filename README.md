@@ -13,7 +13,7 @@ The worker submits automatically to the hard-coded Alpaca paper API. It uses $20
 
 The Mac worker is paused after reconciliation. Do not start a second worker against the same account. The Fly service uses one always-on machine and an encrypted volume for archive, Telegram session, and the order journal. Monitor `/api/v1/execution`, particularly connection health and review flags; the single machine is not highly available. Historical archive messages are not automatically traded.
 
-## Parser 2.0.1
+## Parser 2.1.0
 
 The API, worker and historical replay use `worker/interpretation.py`. `/callouts`,
 `/signals`, `/messages/{id}` and `/trades` return `parserVersion`; `/execution`
@@ -32,6 +32,20 @@ source sell/hold choices, conditional profitable exits, and explicit whole-contr
 trims. Half trims round down; ambiguous quantities require review. Profit-protection
 guidance requests an immediate exit only when a fresh full-position bid is profitable.
 No automatic loss stop or fixed profit target is enabled.
+
+Same-underlying “both calls green” / “both puts green” messages establish exit
+groups without expanding subsequent adds. Declared hold-to-expiry intent is
+recorded separately from sell guidance. Additional explicit tight-profit-stop
+wording is recognized, including the observed “prfit stops” typo.
+
+A same-day exit or profit-protection edit can reduce an existing position when
+the edit itself is fresh, even if the original post is older than 60 seconds.
+Intervening entries, adds, named exits, or position-focus changes block reuse of
+that old context. This does not relax the entry-edit rule above.
+
+SPY option exits may execute through the 15-minute closing session after the
+stock-market close. The broker calendar gates holidays and early closes; entry
+and add cutoffs remain unchanged. Exit confirmation still requires a broker fill.
 
 Telegram push updates are saved into a durable SQLite inbox. One consumer processes
 the revisions and confirms orders; polling/catch-up provides recovery. All observed
