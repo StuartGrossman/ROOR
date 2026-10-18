@@ -1,4 +1,4 @@
-import tempfile, unittest
+import tempfile, unittest, json
 from pathlib import Path
 from fastapi.testclient import TestClient
 from archive import Archive
@@ -34,6 +34,14 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(response.json()['state'],'not_configured')
         (self.path.parent/'service-status.json').write_text('{"status":"running","updated_at":"2026-10-13T14:00:00+00:00","environment":"paper","orders_by_status":{"filled":2}}')
         self.assertEqual(self.client.get('/api/v1/execution',headers=self.auth).json()['environment'],'paper')
+    def test_worker_health_is_the_status_source_in_paper_mode(self):
+        import os
+        from unittest.mock import patch
+        from datetime import datetime, timezone
+        (self.path.parent/'service-status.json').write_text(json.dumps({'status':'running','updated_at':datetime.now(timezone.utc).isoformat(),'telegram':{'connected':True}}))
+        with patch.dict(os.environ,{'FLY_PAPER_EXECUTION':'1'}):
+            app=create_cloud_app(self.path,make_password_record('secret'),123)
+        self.assertTrue(TestClient(app).get('/api/v1/status',headers=self.auth).json()['reader']['isConnected'])
     def test_message_revisions_and_auth(self):
         self.assertEqual(self.client.get('/api/v1/messages/1').status_code,401)
         self.assertEqual(self.client.get('/api/v1/messages/1',headers=self.auth).json()['items'][0]['text'],'sold')

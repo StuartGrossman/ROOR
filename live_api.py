@@ -186,7 +186,8 @@ def reader_status(path):
             return unavailable
         age = (datetime.now(timezone.utc)-stamp).total_seconds()
         return dict(state=value['status'], updatedAt=utc(value['updated_at']),
-                    isConnected=value['status'] == 'running' and 0 <= age <= 45)
+                    isConnected=value['status'] == 'running' and 0 <= age <= 45
+                    and (value.get('telegram') is None or value['telegram'].get('connected') is True))
     except (OSError, ValueError, KeyError, TypeError):
         return unavailable
 

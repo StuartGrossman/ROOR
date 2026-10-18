@@ -46,3 +46,8 @@ class MarketEntryTests(unittest.TestCase):
   self.engine.observe(2,'set profit stops',at,at);self.engine.tick(at)
   self.assertEqual([o['side'] for o in self.broker.calls],['buy'])
   self.assertEqual(self.engine.state['events']['2']['profit_result'],'not_green_at_guidance')
+ def test_restart_reconciles_without_duplicate_orders(self):
+  self.engine.observe(1,'lets buy 600 spy calls for 39 cents.',NOW,NOW);self.engine.tick(NOW)
+  self.engine=MatrixEngine(self.engine.path,self.broker,self.rules)
+  self.engine.observe(1,'lets buy 600 spy calls for 39 cents.',NOW,NOW);self.engine.tick(NOW)
+  self.assertEqual(len(self.broker.calls),1)
