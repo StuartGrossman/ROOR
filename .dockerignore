@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!requirements.txt
+!archive.py
+!signals.py
+!live_api.py
+!cloud_api.py
