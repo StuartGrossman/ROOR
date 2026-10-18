@@ -46,6 +46,27 @@ class UnifiedCalloutRegressions(unittest.TestCase):
     def sells(self):
         return [order for order in self.broker.calls if order['side'] == 'sell']
 
+    def test_must_have_tight_stop_takes_current_profit_without_arming_stop(self):
+        from profit_policy import install
+        from interpretation import interpret_signal
+        install(self.engine, targets=False)
+        self.entry()
+        self.broker.bid = '.60'
+        self.broker.ask = '.61'
+        self.observe(2, 'must have a tight stop', 5)
+        self.assertEqual(interpret_signal('must have a tight stop', NOW)['guidance_class'], 'tight_profit_protection')
+        self.assertEqual(len(self.sells()), 1)
+        self.assertEqual(self.sells()[0]['type'], 'market')
+
+    def test_named_pair_with_side_between_strikes_focuses_both_exits(self):
+        from interpretation import interpret_signal
+        self.entry(1, 600)
+        self.entry(2, 601, 5)
+        self.observe(3, 'holding the 600 calls and 601', 10)
+        self.assertEqual(interpret_signal('holding the 600 calls and 601', NOW)['guidance_class'], 'position_focus')
+        self.observe(4, 'sold', 15)
+        self.assertEqual({o['symbol'] for o in self.sells()}, {'SPY261013C00600000', 'SPY261013C00601000'})
+
     def test_price_only_edit_preserves_filled_root_for_later_sold(self):
         self.entry()
         root = self.engine.state['orders']['geerawr-1-entry']['root_entry']

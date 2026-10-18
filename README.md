@@ -13,7 +13,7 @@ The worker submits automatically to the hard-coded Alpaca paper API. It uses $20
 
 The Mac worker is paused after reconciliation. Do not start a second worker against the same account. The Fly service uses one always-on machine and an encrypted volume for archive, Telegram session, and the order journal. Monitor `/api/v1/execution`, particularly connection health and review flags; the single machine is not highly available. Historical archive messages are not automatically traded.
 
-## Parser 2.0.0
+## Parser 2.0.1
 
 The API, worker and historical replay use `worker/interpretation.py`. `/callouts`,
 `/signals`, `/messages/{id}` and `/trades` return `parserVersion`; `/execution`

@@ -8,7 +8,7 @@ from managed_rules import decide
 from exit_guidance import ExitGuidanceMixin, classify
 from broker_lifecycle import BrokerLifecycleMixin
 
-from interpretation import interpret_signal, direct_sell_choice, PARSER_VERSION
+from interpretation import interpret_signal, direct_sell_choice, holding_pair, PARSER_VERSION
 
 class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
     def __init__(self,path,broker,rules):
@@ -198,7 +198,7 @@ class MatrixEngine(BrokerLifecycleMixin,ExitGuidanceMixin,Engine):
         text=' '.join(text.lower().replace('’',"'").split()).rstrip('.!')
         named=re.fullmatch(r"(?:i'?m |im |still )?(?:holding|holdin|hodling|holdint)(?: the)? (\d+(?:\.\d+)?) (?:spy )?(calls?|puts?)",text)
         both=re.fullmatch(r'both (calls|puts)(?: (?:are )?(?:green|itm))(?: afff)?',text)
-        pair=re.fullmatch(r"(?:i'?m |im |still )?holding (?:the )?(\d+(?:\.\d+)?) and (\d+(?:\.\d+)?) (calls?|puts?)",text)
+        pair=holding_pair(text)
         holding_both=re.fullmatch(r"(?:i'?m |im |still )?holding both(?: (calls|puts|sides))?(?: still)?",text)
         terminal=re.fullmatch(r"(?:i'?m |im )letting (?:the )?(\d+(?:\.\d+)?) (calls?|puts?) exp(?:ire)? worthless",text)
         if terminal:

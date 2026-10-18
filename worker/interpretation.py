@@ -5,7 +5,7 @@ Interpretations describe source intent; ownership, freshness and fills are separ
 import re
 from signals import parse_signal, directed_add_legs
 
-PARSER_VERSION = '2.0.0'
+PARSER_VERSION = '2.0.1'
 
 def normalize(text):
     return ' '.join(text.lower().replace('’', "'").split())
@@ -18,8 +18,13 @@ def protection_kind(text):
     text=normalize(text)
     if '?' in text or re.search(r"\b(?:do not|don't|dont|never) (?:set|have)\b",text):return None
     if re.search(r'\b(?:set|setting|have)(?: a)?(?: tight)? profit stops?\b',text):return 'profit_protection'
-    if re.fullmatch(r'have a tight stop[.!]*',text):return 'tight_profit_protection'
+    if re.fullmatch(r'(?:must )?have a tight stop[.!]*',text):return 'tight_profit_protection'
     return None
+
+def holding_pair(text):
+    text=normalize(text).rstrip('.!')
+    text=re.sub(r'(\d+(?:\.\d+)?) (calls?|puts?) and (\d+(?:\.\d+)?)$',r'\1 and \3 \2',text)
+    return re.fullmatch(r"(?:i'?m |im |still )?holding (?:the )?(\d+(?:\.\d+)?) and (\d+(?:\.\d+)?) (calls?|puts?)",text)
 
 def classify_guidance(text):
     text=normalize(text).rstrip('.!')
@@ -39,6 +44,7 @@ def interpret_signal(text,sent_at):
     if len(text)>4000:return signal
     n=normalize(text)
     if signal['kind'] in {'entry','exit','add'}:return signal
+    if holding_pair(n):return {'kind':'guidance','guidance_class':'position_focus','right':None,'needs_position_context':True}
     guidance=classify_guidance(n)
     if guidance:
         result={'kind':'exit' if guidance=='actionable_exit' else 'guidance','guidance_class':guidance,'right':None,'needs_position_context':True}
