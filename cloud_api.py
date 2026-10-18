@@ -44,6 +44,15 @@ def create_cloud_app(db_path, password_record, chat_id=CHAT_ID):
     @app.get('/api/v1/signals')
     def signals(date: date | None = None,after: int=Query(0,ge=0,le=MAX_CURSOR),limit: int=Query(100,ge=1,le=500)):
         return items(date,after=after,limit=limit,signals_only=True)
+    @app.get('/api/v1/execution')
+    def execution_status():
+        path=Path(db_path).parent/'service-status.json'
+        try:
+            if path.stat().st_size>1000000: raise ValueError('Oversized status')
+            value=json.loads(path.read_text())
+            return {k:value.get(k) for k in ('status','updated_at','environment','strategy_profile','cursor','orders_by_status','exit_watch','exit_reviews','telegram','error')}
+        except (OSError, ValueError, TypeError):
+            return {'state':'not_configured'}
     @app.get('/api/v1/messages/{message_id}')
     def message(message_id: int,after: int=Query(0,ge=0,le=MAX_CURSOR),limit: int=Query(100,ge=1,le=500)):
         result=items(message_id=message_id,after=after,limit=limit)

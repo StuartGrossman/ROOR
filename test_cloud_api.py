@@ -29,6 +29,11 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(by_id[5]['kind'],'add')
         self.assertEqual(by_id[6]['kind'],'review')
         self.assertEqual(by_id[6]['guidance_class'],'possible_trim')
+    def test_execution_status_reports_missing_or_present_worker(self):
+        response=self.client.get('/api/v1/execution',headers=self.auth)
+        self.assertEqual(response.json()['state'],'not_configured')
+        (self.path.parent/'service-status.json').write_text('{"status":"running","updated_at":"2026-10-13T14:00:00+00:00","environment":"paper","orders_by_status":{"filled":2}}')
+        self.assertEqual(self.client.get('/api/v1/execution',headers=self.auth).json()['environment'],'paper')
     def test_message_revisions_and_auth(self):
         self.assertEqual(self.client.get('/api/v1/messages/1').status_code,401)
         self.assertEqual(self.client.get('/api/v1/messages/1',headers=self.auth).json()['items'][0]['text'],'sold')

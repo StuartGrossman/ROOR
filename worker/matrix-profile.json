@@ -1,0 +1,35 @@
+{
+  "candidate": "entry200_add400_callout_exits",
+  "environment": "paper",
+  "activation": "active_paper",
+  "starting_capital": 5000,
+  "rules": {
+    "entry_budget": 200,
+    "addon_budget": 400,
+    "max_adds": 1,
+    "stop_loss": null,
+    "addon_stop_loss": null,
+    "targets": [
+      0.1,
+      0.25
+    ],
+    "target_fractions": [
+      0,
+      0
+    ],
+    "lock_arm": 0.75,
+    "lock_retention": 0.6,
+    "lock_confirmations": 2,
+    "lock_interval_ms": 10000,
+    "burst_seconds": 120,
+    "close_time": "15:15:00",
+    "entry_mode": "market",
+    "entry_discount": 0,
+    "entry_lifetime_seconds": 600,
+    "callout_exits_only": true
+  },
+  "fee_cash_buffer_per_contract_side": 0.1,
+  "evidence": "Focused follow-up on 108 supported alerts across 38 previously viewed sessions; no untouched holdout",
+  "quote_sampling_caveat": "The local bridge polls; tick-based historical stops can differ from live observed triggers.",
+  "source_mapping_caveat": "Unclear position matches and undefined exit conditions are flagged; broker fills alone confirm closure."
+}

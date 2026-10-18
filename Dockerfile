@@ -4,4 +4,5 @@ WORKDIR /app/service/bridge
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY archive.py signals.py live_api.py cloud_api.py live_reader.py supervisor.py execution.py exit_guidance.py ./
+COPY worker/ ./worker/
 CMD ["python", "supervisor.py"]

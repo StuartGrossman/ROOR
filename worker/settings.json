@@ -1,0 +1,6 @@
+{
+  "environment": "paper",
+  "execution_enabled": true,
+  "strategy_profile": "matrix-profile.json",
+  "profile_sha256": "eeb98fe2b89d864b3f7763f2c02aa9c9feeab844987fa9dcff5675ad23f18e37"
+}

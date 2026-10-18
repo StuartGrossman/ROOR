@@ -9,3 +9,8 @@
 !supervisor.py
 !execution.py
 !exit_guidance.py
+!worker/
+!worker/*.py
+!worker/settings.json
+!worker/matrix-profile.json
+worker/test_*.py
